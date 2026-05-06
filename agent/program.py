@@ -4,7 +4,7 @@
 import copy
 
 from referee.game import PlayerColor, Coord, Direction, \
-    Action, PlaceAction, MoveAction, EatAction, CascadeAction, Board, GamePhase
+    Action, PlaceAction, MoveAction, EatAction, CascadeAction, Board, GamePhase, BOARD_N, CARDINAL_DIRECTIONS
 
 
 class GameState:
@@ -43,6 +43,73 @@ class GameState:
 
     def render(self, use_color: bool = False, use_unicode: bool = False) -> str:
         return self._board.render(use_color=use_color, use_unicode=use_unicode)
+
+    def get_legal_actions(self) -> list[Action]:
+        """
+        Generate all legal actions available to the current player.
+        """
+        actions: list[Action] = []
+        current_player = self._board.turn_color
+        opponent = current_player.opponent
+
+        if self.phase == GamePhase.PLACEMENT:
+            # Placement phase: can place on empty cells not adjacent to opponent stacks
+            for r in range(BOARD_N):
+                for c in range(BOARD_N):
+                    coord = Coord(r, c)
+                    if not self._board[coord].is_empty:
+                        continue
+
+                    # Check if adjacent to opponent stack
+                    adjacent_to_opponent = False
+                    for direction in CARDINAL_DIRECTIONS:
+                        adj_r = coord.r + direction.r
+                        adj_c = coord.c + direction.c
+                        if 0 <= adj_r < BOARD_N and 0 <= adj_c < BOARD_N:
+                            adj_cell = self._board[Coord(adj_r, adj_c)]
+                            if adj_cell.color == opponent:
+                                adjacent_to_opponent = True
+                                break
+
+                    if not adjacent_to_opponent:
+                        actions.append(PlaceAction(coord))
+            return actions
+
+        # Play phase: generate MOVE, EAT, and CASCADE actions
+        for r in range(BOARD_N):
+            for c in range(BOARD_N):
+                coord = Coord(r, c)
+                cell = self._board[coord]
+
+                if cell.color != current_player:
+                    continue
+
+                # Try each cardinal direction for MOVE and EAT
+                for direction in CARDINAL_DIRECTIONS:
+                    dest_r = coord.r + direction.r
+                    dest_c = coord.c + direction.c
+
+                    # Check bounds
+                    if not (0 <= dest_r < BOARD_N and 0 <= dest_c < BOARD_N):
+                        continue
+
+                    dest_coord = Coord(dest_r, dest_c)
+                    dest_cell = self._board[dest_coord]
+
+                    # MOVE: destination is empty or friendly stack
+                    if dest_cell.is_empty or dest_cell.color == current_player:
+                        actions.append(MoveAction(coord, direction))
+
+                    # EAT: destination is enemy with height <= ours
+                    if dest_cell.color == opponent and cell.height >= dest_cell.height:
+                        actions.append(EatAction(coord, direction))
+
+                # CASCADE: stack height >= 2, always valid in some direction
+                if cell.height >= 2:
+                    for direction in CARDINAL_DIRECTIONS:
+                        actions.append(CascadeAction(coord, direction))
+
+        return actions
 
 
 class Agent:
