@@ -82,7 +82,7 @@ class MCTSTree:
         board = state._board
         color = board.turn_color
 
-        legal_actions = state.get_legal_actions(board, color)
+        legal_actions = state.get_legal_actions()
 
         if not legal_actions:
             raise ValueError("No legal actions available")
@@ -97,16 +97,16 @@ class MCTSTree:
             return random.choice(legal_actions)
 
         return max(legal_actions, key=action_score)
-
+    
 
     def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
-        enemy_color = PlayerColor.RED if agent_color == PlayerColor.BLUE else PlayerColor.BLUE
+        enemy_color = agent_color.opponent
         board = state._board
         agent_stack_height = self.total_stack_height_count(board, agent_color)
         enemy_stack_height = self.total_stack_height_count(board, enemy_color)
 
         if state.game_over:
-            winner = state._board.winner
+            winner = board.winner_color
             if winner == agent_color:
                 return 1.0
             elif winner == enemy_color:
@@ -115,10 +115,10 @@ class MCTSTree:
 
         # --- Attack distance: how close are we to eating an enemy ---
         min_attack_dist = MAX_DIST
-        for coord, cell in board.items():
+        for coord, cell in board._state.items():
             if cell.color != agent_color:
                 continue
-            for enemy_coord, enemy_cell in board.items():
+            for enemy_coord, enemy_cell in board._state.items():
                 if enemy_cell.color != enemy_color:
                     continue
                 min_orth, max_orth = self.orthogonal(coord, enemy_coord)
@@ -128,10 +128,10 @@ class MCTSTree:
 
         # --- Threat distance: how close is an enemy to eating us ---
         min_threat_dist = MAX_DIST
-        for coord, cell in board.items():
+        for coord, cell in board._state.items():
             if cell.color != enemy_color:
                 continue
-            for friendly_coord, friendly_cell in board.items():
+            for friendly_coord, friendly_cell in board._state.items():
                 if friendly_cell.color != agent_color:
                     continue
                 # Only a real threat if enemy is tall enough to eat us
@@ -145,26 +145,22 @@ class MCTSTree:
         # --- Scores ---
         token_score = agent_stack_height / (agent_stack_height + enemy_stack_height)
         dist_score = 1.0 - (min_attack_dist / MAX_DIST)
-        threat_score = min_threat_dist / MAX_DIST  # higher = enemy is farther = safer
+        threat_score = min_threat_dist / MAX_DIST
 
         # --- Dynamic weighting based on game phase ---
-        progress = min(state.play_phase_turn_count / 300, 1.0)
-        w_token = 0.4 + 0.4 * progress   # 0.4 early, 0.8 late
-        w_dist = (1.0 - w_token) * 0.6   # shrinks as game progresses
-        w_threat = (1.0 - w_token) * 0.4 # shrinks as game progresses
+        progress = min(board.play_phase_turn_count / 300, 1.0)
+        w_token = 0.4 + 0.4 * progress
+        w_dist = (1.0 - w_token) * 0.6
+        w_threat = (1.0 - w_token) * 0.4
 
         return w_token * token_score + w_dist * dist_score + w_threat * threat_score
 
-
-
     def total_stack_height_count(self, board: Board, color: PlayerColor) -> int:
-        count = 0
-        for cell in board.values():
-            if cell.color == color:
-                count += cell.height
-        return count
+        return sum(
+            cell.height for cell in board._state.values()
+            if cell.color == color
+        )
 
-    
     '''Helper function for calculating orthogonal distance between two coordinates. Returns a tuple of (min_orth, max_orth)'''
     def orthogonal(self, a: Coord, b: Coord) -> tuple[int, int]:
         dx = abs(a.c - b.c)
