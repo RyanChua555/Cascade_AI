@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from referee.game import GamePhase
+from referee.game.actions import CascadeAction, EatAction, MoveAction, PlaceAction
+from referee.game.board import Board
+from referee.game.coord import CARDINAL_DIRECTIONS, Coord
+from referee.game.player import PlayerColor
+from referee.game import Direction
 
 from .program import GameState
 from referee.game import Action
 
+MAX_DIST = 14 # max orthogonal distance on an 8x8 board
 
 @dataclass
 class MCTSNode:
@@ -59,7 +66,7 @@ class MCTSTree:
         return self.root.state.clone()
 
     def selection(self, node: MCTSNode) -> MCTSNode:
-        while node.children:
+        while node.is_fully_expanded and not node.state.game_over:
             best = node.best_child()
             if best is None:
                 break
@@ -69,9 +76,101 @@ class MCTSTree:
     def expand(self, node: MCTSNode, action: Action, next_state: GameState) -> MCTSNode:
         return node.add_child(action, next_state)
 
-    def rollout_policy(self, state: GameState) -> Action:
-        raise NotImplementedError("Not implemented yet")
+    def rollout_policy(self, state: GameState, agent_color: PlayerColor) -> Action:
+        import random
 
+        board = state._board
+        color = board.turn_color
+
+        legal_actions = state.get_legal_actions(board, color)
+
+        if not legal_actions:
+            raise ValueError("No legal actions available")
+
+        def action_score(action: Action) -> float:
+            next_state = state.clone()
+            next_state.apply_action(action)
+            return self.rollout_score(next_state, agent_color)
+
+        # Small epsilon-greedy random chance to avoid deterministic rollouts
+        if random.random() < 0.1:
+            return random.choice(legal_actions)
+
+        return max(legal_actions, key=action_score)
+
+
+    def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
+        enemy_color = PlayerColor.RED if agent_color == PlayerColor.BLUE else PlayerColor.BLUE
+        board = state._board
+        agent_stack_height = self.total_stack_height_count(board, agent_color)
+        enemy_stack_height = self.total_stack_height_count(board, enemy_color)
+
+        if state.game_over:
+            winner = state._board.winner
+            if winner == agent_color:
+                return 1.0
+            elif winner == enemy_color:
+                return 0.0
+            return 0.5
+
+        # --- Attack distance: how close are we to eating an enemy ---
+        min_attack_dist = MAX_DIST
+        for coord, cell in board.items():
+            if cell.color != agent_color:
+                continue
+            for enemy_coord, enemy_cell in board.items():
+                if enemy_cell.color != enemy_color:
+                    continue
+                min_orth, max_orth = self.orthogonal(coord, enemy_coord)
+                dist = min_orth + max(max_orth - cell.height, 0)
+                if dist < min_attack_dist:
+                    min_attack_dist = dist
+
+        # --- Threat distance: how close is an enemy to eating us ---
+        min_threat_dist = MAX_DIST
+        for coord, cell in board.items():
+            if cell.color != enemy_color:
+                continue
+            for friendly_coord, friendly_cell in board.items():
+                if friendly_cell.color != agent_color:
+                    continue
+                # Only a real threat if enemy is tall enough to eat us
+                if cell.height < friendly_cell.height:
+                    continue
+                min_orth, max_orth = self.orthogonal(coord, friendly_coord)
+                dist = min_orth + max(max_orth - cell.height, 0)
+                if dist < min_threat_dist:
+                    min_threat_dist = dist
+
+        # --- Scores ---
+        token_score = agent_stack_height / (agent_stack_height + enemy_stack_height)
+        dist_score = 1.0 - (min_attack_dist / MAX_DIST)
+        threat_score = min_threat_dist / MAX_DIST  # higher = enemy is farther = safer
+
+        # --- Dynamic weighting based on game phase ---
+        progress = min(state.play_phase_turn_count / 300, 1.0)
+        w_token = 0.4 + 0.4 * progress   # 0.4 early, 0.8 late
+        w_dist = (1.0 - w_token) * 0.6   # shrinks as game progresses
+        w_threat = (1.0 - w_token) * 0.4 # shrinks as game progresses
+
+        return w_token * token_score + w_dist * dist_score + w_threat * threat_score
+
+
+
+    def total_stack_height_count(self, board: Board, color: PlayerColor) -> int:
+        count = 0
+        for cell in board.values():
+            if cell.color == color:
+                count += cell.height
+        return count
+
+    
+    '''Helper function for calculating orthogonal distance between two coordinates. Returns a tuple of (min_orth, max_orth)'''
+    def orthogonal(self, a: Coord, b: Coord) -> tuple[int, int]:
+        dx = abs(a.c - b.c)
+        dy = abs(a.r - b.r)
+        return (dx, dy) if dx <= dy else (dy, dx)
+    
     def simulate(self, state: GameState) -> float:
         raise NotImplementedError("Not implemented yet")
 
