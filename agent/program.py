@@ -283,15 +283,8 @@ class Agent:
                 node = child
 
 
-            # TODO: Finish Simulation function
             # ---- 3. Simulation ----
-            # Simulate a random playout from the node's state.
-            try:
-                reward = tree.simulate(node.state)
-            except NotImplementedError:
-                # Simulate not implemented yet — fall back to
-                # the static evaluation score so the agent is still runnable.
-                reward = tree.rollout_score(node.state, self._color)
+            reward = tree.simulate(node.state)
 
             # ---- 4. Backpropagation ----
             tree.backpropagate(node, reward)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+import random
 from referee.game import GamePhase
 from referee.game.actions import CascadeAction, EatAction, MoveAction, PlaceAction
 from referee.game.board import Board
@@ -13,6 +14,8 @@ from .program import GameState
 from referee.game import Action
 
 MAX_DIST = 14 # max orthogonal distance on an 8x8 board
+
+MAX_ROLLOUT_DEPTH = 30
 
 @dataclass
 class MCTSNode:
@@ -76,27 +79,90 @@ class MCTSTree:
     def expand(self, node: MCTSNode, action: Action, next_state: GameState) -> MCTSNode:
         return node.add_child(action, next_state)
 
+
     def rollout_policy(self, state: GameState, agent_color: PlayerColor) -> Action:
-        import random
-
-        board = state._board
-        color = board.turn_color
-
+        """
+        Select an action for a simulation step without cloning the board for
+        every candidate.  Priority order:
+          1. Immediate EatActions (free captures — always worth taking).
+          2. CascadeActions that push an enemy off the board or pile tokens
+             (cheap approximation: prefer cascades aimed at enemy stacks).
+          3. Everything else, scored with a lightweight static heuristic and a
+             small random tie-breaker so rollouts aren't deterministic.
+        """
         legal_actions = state.get_legal_actions()
 
         if not legal_actions:
             raise ValueError("No legal actions available")
+ 
+        board = state._board
+        color = board.turn_color
+        opponent = color.opponent
 
-        def action_score(action: Action) -> float:
-            next_state = state.clone()
-            next_state.apply_action(action)
-            return self.rollout_score(next_state, agent_color)
+        # Placement phase handled separately since it has a different action type and priorities.
+        if state.phase == GamePhase.PLACEMENT:
+            return self.placement_policy(state, color)
+        
 
-        # Small epsilon-greedy random chance to avoid deterministic rollouts
-        if random.random() < 0.1:
-            return random.choice(legal_actions)
-
-        return max(legal_actions, key=action_score)
+        # ---- 1. Prefer immediate eat actions --------------------------
+        eat_actions: list[EatAction] = [a for a in legal_actions if isinstance(a, EatAction)]
+        if eat_actions:
+            # Among eats, prefer ones targeting the tallest enemy stack
+            def eat_priority(a: EatAction) -> int:
+                dest = Coord(a.coord.r + a.direction.r, a.coord.c + a.direction.c)
+                return board._state[dest].height
+            return max(eat_actions, key=eat_priority)
+ 
+        # ---- 2. Prefer cascade actions aimed at enemy stacks ----------
+        cascade_actions: list[CascadeAction] = [a for a in legal_actions if isinstance(a, CascadeAction)]
+        if cascade_actions and random.random() < 0.6:
+            # Score each cascade by how many enemy cells are along its path
+            def cascade_priority(a: CascadeAction) -> float:
+                score = 0
+                r, c = a.coord.r, a.coord.c
+                height = board._state[a.coord].height
+                for step in range(1, height + 1):
+                    nr = r + a.direction.r * step
+                    nc = c + a.direction.c * step
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        cell = board._state[Coord(nr, nc)]
+                        if cell.color == opponent:
+                            score += cell.height + 1  # taller enemies worth more
+                return score + random.random() * 0.1
+            best_cascade = max(cascade_actions, key=cascade_priority)
+            if cascade_priority(best_cascade) > 0:
+                return best_cascade
+ 
+        # ---- 3. Light heuristic over remaining moves ------------------
+        # Uses only O(1) board lookups per action — no cloning.
+        def light_score(action: Action) -> float:
+            if isinstance(action, MoveAction):
+                dest = Coord(
+                    action.coord.r + action.direction.r,
+                    action.coord.c + action.direction.c,
+                )
+                # Prefer merges (moving onto friendly) over lonely relocations
+                dest_cell = board._state[dest]
+                merge_bonus = dest_cell.height * 0.15 if dest_cell.color == color else 0.0
+ 
+                # Prefer moving toward the nearest enemy
+                min_enemy_dist = MAX_DIST
+                for coord, cell in board._state.items():
+                    if cell.color == opponent:
+                        d = abs(dest.r - coord.r) + abs(dest.c - coord.c)
+                        if d < min_enemy_dist:
+                            min_enemy_dist = d
+                approach_score = 1.0 - (min_enemy_dist / MAX_DIST)
+ 
+                return approach_score + merge_bonus + random.random() * 0.05
+ 
+            # CascadeAction (no eligible enemy target found above)
+            if isinstance(action, CascadeAction):
+                return 0.3 + random.random() * 0.1
+ 
+            return random.random() * 0.05
+ 
+        return max(legal_actions, key=light_score)
     
 
     def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
@@ -104,7 +170,7 @@ class MCTSTree:
         board = state._board
         agent_stack_height = self.total_stack_height_count(board, agent_color)
         enemy_stack_height = self.total_stack_height_count(board, enemy_color)
-
+ 
         if state.game_over:
             winner = board.winner_color
             if winner == agent_color:
@@ -112,7 +178,7 @@ class MCTSTree:
             elif winner == enemy_color:
                 return 0.0
             return 0.5
-
+ 
         # --- Attack distance: how close are we to eating an enemy ---
         min_attack_dist = MAX_DIST
         for coord, cell in board._state.items():
@@ -125,7 +191,7 @@ class MCTSTree:
                 dist = min_orth + max(max_orth - cell.height, 0)
                 if dist < min_attack_dist:
                     min_attack_dist = dist
-
+ 
         # --- Threat distance: how close is an enemy to eating us ---
         min_threat_dist = MAX_DIST
         for coord, cell in board._state.items():
@@ -141,18 +207,18 @@ class MCTSTree:
                 dist = min_orth + max(max_orth - cell.height, 0)
                 if dist < min_threat_dist:
                     min_threat_dist = dist
-
+ 
         # --- Scores ---
         token_score = agent_stack_height / (agent_stack_height + enemy_stack_height)
         dist_score = 1.0 - (min_attack_dist / MAX_DIST)
         threat_score = min_threat_dist / MAX_DIST
-
+ 
         # --- Dynamic weighting based on game phase ---
         progress = min(board.play_phase_turn_count / 300, 1.0)
         w_token = 0.4 + 0.4 * progress
         w_dist = (1.0 - w_token) * 0.6
         w_threat = (1.0 - w_token) * 0.4
-
+ 
         return w_token * token_score + w_dist * dist_score + w_threat * threat_score
 
     def total_stack_height_count(self, board: Board, color: PlayerColor) -> int:
@@ -160,6 +226,23 @@ class MCTSTree:
             cell.height for cell in board._state.values()
             if cell.color == color
         )
+    
+
+    def placement_policy(self, state: GameState, agent_color: PlayerColor) -> PlaceAction:
+        legal_places = state.get_legal_actions()
+        legal_places = [a for a in legal_places if isinstance(a, PlaceAction)]
+        board = state._board
+        opponent = agent_color.opponent
+ 
+        def placement_score(action: PlaceAction) -> float:
+            coord = action.coord
+            score = 0.0
+            score += abs(3.5 - coord.r) * 0.05  # prefer center rows
+            score += abs(3.5 - coord.c) * 0.05  # prefer center columns
+            return score + random.random() * 0.1  # small random tie-breaker
+ 
+        return max(legal_places, key=placement_score)
+    
 
     '''Helper function for calculating orthogonal distance between two coordinates. Returns a tuple of (min_orth, max_orth)'''
     def orthogonal(self, a: Coord, b: Coord) -> tuple[int, int]:
@@ -168,7 +251,25 @@ class MCTSTree:
         return (dx, dy) if dx <= dy else (dy, dx)
     
     def simulate(self, state: GameState) -> float:
-        raise NotImplementedError("Not implemented yet")
+        # The perspective we always score from is the agent that owns the tree.
+        agent_color: PlayerColor = self.root.state.turn_color
+ 
+        # Work on a cheap clone so we never mutate the node's state.
+        sim_state = state.clone()
+ 
+        for _ in range(MAX_ROLLOUT_DEPTH):
+            if sim_state.game_over:
+                break
+ 
+            try:
+                action = self.rollout_policy(sim_state, agent_color)
+            except ValueError:
+                # No legal actions — game is effectively over.
+                break
+ 
+            sim_state.apply_action(action)
+ 
+        return self.rollout_score(sim_state, agent_color)
 
     def backpropagate(self, node: MCTSNode | None, reward: float) -> None:
         while node is not None:
