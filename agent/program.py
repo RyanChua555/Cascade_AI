@@ -2,9 +2,27 @@
 # Project Part B: Game Playing Agent
 
 import copy
+import time
+import random
 
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction, Board, GamePhase, BOARD_N, CARDINAL_DIRECTIONS
+
+
+# Total CPU seconds available per game (referee hard limit is 180s).
+TOTAL_TIME_BUDGET = 180.0
+
+# Reserve this many seconds as a safety buffer so we never hit the hard limit.
+TIME_BUFFER = 5.0
+
+# Fraction of remaining time to spend on each individual MCTS call.
+TIME_FRACTION_PER_TURN = 0.05
+
+# Hard cap per turn so early turns don't burn too much time on their own.
+MAX_TIME_PER_TURN = 5.0
+
+# Minimum time to give MCTS even in very late games.
+MIN_TIME_PER_TURN = 0.1
 
 
 class GameState:
@@ -53,14 +71,14 @@ class GameState:
         opponent = current_player.opponent
 
         if self.phase == GamePhase.PLACEMENT:
-            # Placement phase: can place on empty cells not adjacent to opponent stacks
+            # Placement phase: can place on empty cells not adjacent to
+            # opponent stacks.
             for r in range(BOARD_N):
                 for c in range(BOARD_N):
                     coord = Coord(r, c)
                     if not self._board[coord].is_empty:
                         continue
 
-                    # Check if adjacent to opponent stack
                     adjacent_to_opponent = False
                     for direction in CARDINAL_DIRECTIONS:
                         adj_r = coord.r + direction.r
@@ -75,7 +93,7 @@ class GameState:
                         actions.append(PlaceAction(coord))
             return actions
 
-        # Play phase: generate MOVE, EAT, and CASCADE actions
+        # Play phase: generate MOVE, EAT, and CASCADE actions.
         for r in range(BOARD_N):
             for c in range(BOARD_N):
                 coord = Coord(r, c)
@@ -84,32 +102,76 @@ class GameState:
                 if cell.color != current_player:
                     continue
 
-                # Try each cardinal direction for MOVE and EAT
                 for direction in CARDINAL_DIRECTIONS:
                     dest_r = coord.r + direction.r
                     dest_c = coord.c + direction.c
 
-                    # Check bounds
                     if not (0 <= dest_r < BOARD_N and 0 <= dest_c < BOARD_N):
                         continue
 
                     dest_coord = Coord(dest_r, dest_c)
                     dest_cell = self._board[dest_coord]
 
-                    # MOVE: destination is empty or friendly stack
                     if dest_cell.is_empty or dest_cell.color == current_player:
                         actions.append(MoveAction(coord, direction))
 
-                    # EAT: destination is enemy with height <= ours
                     if dest_cell.color == opponent and cell.height >= dest_cell.height:
                         actions.append(EatAction(coord, direction))
 
-                # CASCADE: stack height >= 2, always valid in some direction
                 if cell.height >= 2:
                     for direction in CARDINAL_DIRECTIONS:
                         actions.append(CascadeAction(coord, direction))
 
         return actions
+
+
+def placement_score(coord: Coord, board: Board, color: PlayerColor) -> float:
+    """
+    Score a placement cell for the placement phase.
+
+    Prefers:
+      - Cells near the board centre (maximises future mobility)
+      - Cells far from the opponent's existing stacks (safety buffer)
+      - Cells with more empty neighbours (room to spread)
+    """
+    opponent = color.opponent
+    centre = 3.5
+
+    # Distance from centre (lower is better — negate for scoring).
+    dist_from_centre = abs(coord.r - centre) + abs(coord.c - centre)
+    centre_score = 1.0 - (dist_from_centre / 7.0)  # normalise to [0, 1]
+
+    # Minimum Manhattan distance to any opponent stack.
+    min_opp_dist = BOARD_N * 2  # start with a large value
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            cell = board[Coord(r, c)]
+            if cell.color == opponent:
+                d = abs(coord.r - r) + abs(coord.c - c)
+                if d < min_opp_dist:
+                    min_opp_dist = d
+    opp_dist_score = min(min_opp_dist / 7.0, 1.0)
+
+    # Count empty orthogonal neighbours.
+    empty_neighbours = 0
+    for direction in CARDINAL_DIRECTIONS:
+        nr, nc = coord.r + direction.r, coord.c + direction.c
+        if 0 <= nr < BOARD_N and 0 <= nc < BOARD_N:
+            if board[Coord(nr, nc)].is_empty:
+                empty_neighbours += 1
+    mobility_score = empty_neighbours / 4.0
+
+    return 0.4 * centre_score + 0.4 * opp_dist_score + 0.2 * mobility_score
+
+
+def choose_placement(state: GameState, color: PlayerColor) -> Action:
+    """
+    Pick the best placement cell using the heuristic.
+    """
+    legal = state.get_legal_actions()
+
+    return max(legal, key=lambda a: placement_score(a.coord, state._board, color))
+
 
 
 class Agent:
@@ -119,77 +181,123 @@ class Agent:
     """
 
     def __init__(self, color: PlayerColor, **referee: dict):
-        """
-        This constructor method runs when the referee instantiates the agent.
-        Any setup and/or precomputation should be done here.
-        """
         self._color = color
-        self._turn_count = 0
-        self._game_state = GameState()
+        self._game_state = GameState(initial_player=PlayerColor.RED)
 
-        match color:
-            case PlayerColor.RED:
-                print("Testing: I am playing as RED (first player)")
-            case PlayerColor.BLUE:
-                print("Testing: I am playing as BLUE")
+        self._start_time = time.time()
+        self._time_used = 0.0
+
+        print(f"MCTS agent initialised as {color}")
+
 
     def action(self, **referee: dict) -> Action:
         """
-        This method is called by the referee each time it is the agent's turn
-        to take an action. It must always return an action object.
+        Called by the referee at the start of our turn.  Returns the chosen
+        action.
         """
+        time_remaining: float | None = referee.get("time_remaining", None)  # type: ignore
 
-        # Below we have hardcoded actions to be played depending on whether
-        # the agent is playing as BLUE or RED. Obviously this won't work beyond
-        # the initial moves of the game, so you should use some game playing
-        # technique(s) to determine the best action to take.
+        # --- Placement phase ---
+        if self._game_state.phase == GamePhase.PLACEMENT:
+            chosen = choose_placement(self._game_state, self._color)
+            print(f"MCTS agent ({self._color}): PLACE at {chosen.coord}")
+            return chosen
 
-        # During placement phase (first 8 turns total, 4 per player)
-        if self._turn_count < 4:
-            match self._color:
-                case PlayerColor.RED:
-                    print("Testing: RED is playing a PLACE action")
-                    return PlaceAction(Coord(0, self._turn_count))
-                case PlayerColor.BLUE:
-                    print("Testing: BLUE is playing a PLACE action")
-                    return PlaceAction(Coord(7, self._turn_count))
+        # --- Play phase: run MCTS ---
+        budget = self.turn_budget(time_remaining)
+        action = self.run_mcts(budget)
 
-        # During play phase
-        match self._color:
-            case PlayerColor.RED:
-                print("Testing: RED is playing a MOVE action")
-                return MoveAction(Coord(0, 0), Direction.Down)
-            case PlayerColor.BLUE:
-                print("Testing: BLUE is playing a MOVE action")
-                return MoveAction(Coord(7, 0), Direction.Up)
+        if action is None:
+            # Fallback: pick a random legal action so we never return none
+            legal = self._game_state.get_legal_actions()
+            action = random.choice(legal) if legal else MoveAction(Coord(0, 0), Direction.Down)
+            print(f"MCTS agent ({self._color}): fallback random action {action}")
+        else:
+            print(f"MCTS agent ({self._color}): MCTS chose {action}")
+
+        return action
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
-        This method is called by the referee after a player has taken their
-        turn. You should use it to update the agent's internal game state.
+        Called by the referee after every turn (ours and the opponent's).
+        Keep our internal game state in sync.
         """
         self._game_state.apply_action(action)
-        if color == self._color:
-            self._turn_count += 1
 
-        # There are four possible action types: PLACE, MOVE, EAT, and CASCADE.
-        # Below we check which type of action was played and print out the
-        # details of the action for demonstration purposes. You should replace
-        # this with your own logic to update your agent's internal game state.
-        match action:
-            case PlaceAction(coord):
-                print(f"Testing: {color} played PLACE action at {coord}")
-            case MoveAction(coord, direction):
-                print(f"Testing: {color} played MOVE action:")
-                print(f"  Coord: {coord}")
-                print(f"  Direction: {direction}")
-            case EatAction(coord, direction):
-                print(f"Testing: {color} played EAT action:")
-                print(f"  Coord: {coord}")
-                print(f"  Direction: {direction}")
-            case CascadeAction(coord, direction):
-                print(f"Testing: {color} played CASCADE action:")
-                print(f"  Coord: {coord}")
-                print(f"  Direction: {direction}")
-            case _:
-                raise ValueError(f"Unknown action type: {action}")
+
+    def turn_budget(self, time_remaining: float | None) -> float:
+        """
+        Compute how many seconds to give to MCTS this turn.
+
+        Uses the time_remaining hint from the referee when available.
+        Falls back to a conservative estimate based on elapsed wall time.
+        """
+        if time_remaining is not None:
+            available = max(time_remaining - TIME_BUFFER, 0.0)
+        else:
+            elapsed = time.time() - self._start_time
+            available = max(TOTAL_TIME_BUDGET - elapsed - TIME_BUFFER, 0.0)
+
+        budget = available * TIME_FRACTION_PER_TURN
+        budget = max(MIN_TIME_PER_TURN, min(MAX_TIME_PER_TURN, budget))
+        return budget
+
+    def run_mcts(self, time_budget: float) -> Action | None:
+        """
+        Run the four-phase MCTS loop for `time_budget` seconds and return
+        the best action found.
+
+        """
+        # Import here to avoid a circular import at module level.
+        from .mcts import MCTSTree
+
+        root_state = self._game_state.clone()
+        tree = MCTSTree(root_state)
+
+        # Initialise the root's untried actions.
+        tree.root.untried_actions = root_state.get_legal_actions()
+
+        # If there is only one legal action, skip MCTS entirely.
+        if len(tree.root.untried_actions) == 1:
+            return tree.root.untried_actions[0]
+
+        deadline = time.time() + time_budget
+        iterations = 0
+
+        while time.time() < deadline:
+            # ---- 1. Selection ----
+            node = tree.selection(tree.root)
+
+            # ---- 2. Expansion ----
+            # If the node is not terminal and has untried actions, expand one.
+            if not node.state.game_over and node.untried_actions:
+                action = node.untried_actions.pop()
+                next_state = node.state.clone()
+                next_state.apply_action(action)
+
+                child = tree.expand(node, action, next_state)
+
+                # Initialise the child's untried actions for future expansion.
+                child.untried_actions = next_state.get_legal_actions()
+
+                node = child
+
+
+            # TODO: Finish Simulation function
+            # ---- 3. Simulation ----
+            # Simulate a random playout from the node's state.
+            try:
+                reward = tree.simulate(node.state)
+            except NotImplementedError:
+                # Simulate not implemented yet — fall back to
+                # the static evaluation score so the agent is still runnable.
+                reward = tree.rollout_score(node.state, self._color)
+
+            # ---- 4. Backpropagation ----
+            tree.backpropagate(node, reward)
+
+            iterations += 1
+
+        print(f"MCTS agent ({self._color}): {iterations} iterations in {time_budget:.2f}s")
+
+        return tree.best_action()
