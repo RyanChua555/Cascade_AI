@@ -275,6 +275,7 @@ class MCTSTree:
         while node is not None:
             node.update(reward)
             node = node.parent
+            reward = 1.0 - reward 
 
     def best_action(self) -> Action | None:
         if not self.root.children:
