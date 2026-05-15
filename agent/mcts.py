@@ -134,7 +134,7 @@ class MCTSTree:
                 return best_cascade
  
         # ---- 3. Light heuristic over remaining moves ------------------
-        # Uses only O(1) board lookups per action — no cloning.
+        # Uses only O(1) board lookups per action.
         def light_score(action: Action) -> float:
             if isinstance(action, MoveAction):
                 dest = Coord(
@@ -237,8 +237,8 @@ class MCTSTree:
         def placement_score(action: PlaceAction) -> float:
             coord = action.coord
             score = 0.0
-            score += abs(3.5 - coord.r) * 0.05  # prefer center rows
-            score += abs(3.5 - coord.c) * 0.05  # prefer center columns
+            score -= abs(3.5 - coord.r) * 0.05  # prefer center rows
+            score -= abs(3.5 - coord.c) * 0.05  # prefer center columns
             return score + random.random() * 0.1  # small random tie-breaker
  
         return max(legal_places, key=placement_score)
