@@ -124,56 +124,6 @@ class GameState:
 
         return actions
 
-
-def placement_score(coord: Coord, board: Board, color: PlayerColor) -> float:
-    """
-    Score a placement cell for the placement phase.
-
-    Prefers:
-      - Cells near the board centre (maximises future mobility)
-      - Cells far from the opponent's existing stacks (safety buffer)
-      - Cells with more empty neighbours (room to spread)
-    """
-    opponent = color.opponent
-    centre = 3.5
-
-    # Distance from centre (lower is better — negate for scoring).
-    dist_from_centre = abs(coord.r - centre) + abs(coord.c - centre)
-    centre_score = 1.0 - (dist_from_centre / 7.0)  # normalise to [0, 1]
-
-    # Minimum Manhattan distance to any opponent stack.
-    min_opp_dist = BOARD_N * 2  # start with a large value
-    for r in range(BOARD_N):
-        for c in range(BOARD_N):
-            cell = board[Coord(r, c)]
-            if cell.color == opponent:
-                d = abs(coord.r - r) + abs(coord.c - c)
-                if d < min_opp_dist:
-                    min_opp_dist = d
-    opp_dist_score = min(min_opp_dist / 7.0, 1.0)
-
-    # Count empty orthogonal neighbours.
-    empty_neighbours = 0
-    for direction in CARDINAL_DIRECTIONS:
-        nr, nc = coord.r + direction.r, coord.c + direction.c
-        if 0 <= nr < BOARD_N and 0 <= nc < BOARD_N:
-            if board[Coord(nr, nc)].is_empty:
-                empty_neighbours += 1
-    mobility_score = empty_neighbours / 4.0
-
-    return 0.4 * centre_score + 0.4 * opp_dist_score + 0.2 * mobility_score
-
-
-def choose_placement(state: GameState, color: PlayerColor) -> Action:
-    """
-    Pick the best placement cell using the heuristic.
-    """
-    legal = state.get_legal_actions()
-
-    return max(legal, key=lambda a: placement_score(a.coord, state._board, color))
-
-
-
 class Agent:
     """
     This class is the "entry point" for your agent, providing an interface to
@@ -196,12 +146,6 @@ class Agent:
         action.
         """
         time_remaining: float | None = referee.get("time_remaining", None)  # type: ignore
-
-        # --- Placement phase ---
-        if self._game_state.phase == GamePhase.PLACEMENT:
-            chosen = choose_placement(self._game_state, self._color)
-            print(f"MCTS agent ({self._color}): PLACE at {chosen.coord}")
-            return chosen
 
         # --- Play phase: run MCTS ---
         budget = self.turn_budget(time_remaining)

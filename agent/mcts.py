@@ -99,7 +99,7 @@ class MCTSTree:
         color = board.turn_color
         opponent = color.opponent
 
-        # Placement phase handled separately since it has a different action type and priorities.
+        # ---- 0. Placement phase handled separately --------------------
         if state.phase == GamePhase.PLACEMENT:
             return self.placement_policy(state, color)
         
@@ -164,63 +164,137 @@ class MCTSTree:
  
         return max(legal_actions, key=light_score)
     
-
     def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
+        """
+        Static evaluation of a board position from agent_color's perspective.
+        Returns a value in [0, 1] where 1 = certain win, 0 = certain loss.
+ 
+        Five features, all normalised to [0, 1] before weighting:
+ 
+        1. token_score       raw token count ratio.  Fundamental material
+                              balance; weighted more heavily late game.
+ 
+        2. tall_score        ratio of "tall" tokens (in stacks h≥3) to total.
+                              Tall stacks are the primary offensive weapon: they
+                              can EAT anything of equal or lesser height and
+                              CASCADE further.  Dispersed h=1 tokens (the main
+                              failure mode we observed) score near 0 here.
+ 
+        3. eat_threat_score  immediate EAT opportunities minus immediate
+                              vulnerabilities.  Directly rewards positions where
+                              we can capture on the next move.
+ 
+        4. attack_dist_score how close our tallest stack is to any enemy.
+                              Encourages convergence rather than aimless drift.
+ 
+        5. draw_penalty      penalises positions close to the turn limit or
+                              with low token counts on both sides (draw-prone
+                              endgames).  Draws score 0.5 which is neutral, but
+                              we want to actively avoid them when winning.
+        """
         enemy_color = agent_color.opponent
         board = state._board
-        agent_stack_height = self.total_stack_height_count(board, agent_color)
-        enemy_stack_height = self.total_stack_height_count(board, enemy_color)
+        bstate = board._state
  
+        # Terminal positions
         if state.game_over:
             winner = board.winner_color
             if winner == agent_color:
                 return 1.0
             elif winner == enemy_color:
                 return 0.0
+            return 0.45  # draw is slightly bad — prefer decisive wins
+ 
+        # --- Gather per-color stack lists once ---
+        agent_stacks: list[tuple[Coord, int]] = []
+        enemy_stacks: list[tuple[Coord, int]] = []
+        for coord, cell in bstate.items():
+            if cell.color == agent_color:
+                agent_stacks.append((coord, cell.height))
+            elif cell.color == enemy_color:
+                enemy_stacks.append((coord, cell.height))
+ 
+        agent_tokens = sum(h for _, h in agent_stacks)
+        enemy_tokens = sum(h for _, h in enemy_stacks)
+        total_tokens = agent_tokens + enemy_tokens
+        if total_tokens == 0:
             return 0.5
  
-        # --- Attack distance: how close are we to eating an enemy ---
-        min_attack_dist = MAX_DIST
-        for coord, cell in board._state.items():
-            if cell.color != agent_color:
+        # 1. Token ratio
+        token_score = agent_tokens / total_tokens  # [0, 1]
+ 
+        # 2. Tall-stack concentration
+        # Tokens sitting in stacks of height >= 3 are "combat-ready".
+        # h=1 tokens scattered after a cascade are nearly useless alone.
+        agent_tall = sum(h for _, h in agent_stacks if h >= 3)
+        enemy_tall = sum(h for _, h in enemy_stacks if h >= 3)
+        tall_total = agent_tall + enemy_tall
+        tall_score = (agent_tall / tall_total) if tall_total > 0 else 0.5
+ 
+        # 3. Immediate eat threats vs vulnerabilities
+        eat_threats    = 0
+        vulnerabilities = 0
+        for (ac, ah) in agent_stacks:
+            for d in CARDINAL_DIRECTIONS:
+                nr, nc = ac.r + d.r, ac.c + d.c
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    nbr = bstate[Coord(nr, nc)]
+                    if nbr.color == enemy_color and ah >= nbr.height:
+                        eat_threats += nbr.height  # weight by tokens captured
+        for (ec, eh) in enemy_stacks:
+            for d in CARDINAL_DIRECTIONS:
+                nr, nc = ec.r + d.r, ec.c + d.c
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    nbr = bstate[Coord(nr, nc)]
+                    if nbr.color == agent_color and eh >= nbr.height:
+                        vulnerabilities += nbr.height
+        max_threat = max(agent_tokens, enemy_tokens, 1)
+        eat_threat_score = 0.5 + (eat_threats - vulnerabilities) / (2.0 * max_threat)
+        eat_threat_score = max(0.0, min(1.0, eat_threat_score))
+ 
+        # 4. Attack distance — how close is our tallest stack to any enemy?
+        # Only consider stacks tall enough to actually threaten (h >= 2).
+        min_attack_dist = float(MAX_DIST)
+        for (ac, ah) in agent_stacks:
+            if ah < 2:
                 continue
-            for enemy_coord, enemy_cell in board._state.items():
-                if enemy_cell.color != enemy_color:
-                    continue
-                min_orth, max_orth = self.orthogonal(coord, enemy_coord)
-                dist = min_orth + max(max_orth - cell.height, 0)
-                if dist < min_attack_dist:
-                    min_attack_dist = dist
+            for (ec, _) in enemy_stacks:
+                d = abs(ac.r - ec.r) + abs(ac.c - ec.c)
+                if d < min_attack_dist:
+                    min_attack_dist = d
+        if min_attack_dist == float(MAX_DIST):
+            # No tall stacks — fall back to any stack's distance
+            for (ac, _) in agent_stacks:
+                for (ec, _) in enemy_stacks:
+                    d = abs(ac.r - ec.r) + abs(ac.c - ec.c)
+                    if d < min_attack_dist:
+                        min_attack_dist = d
+        attack_dist_score = 1.0 - (min_attack_dist / MAX_DIST)  # [0, 1]
  
-        # --- Threat distance: how close is an enemy to eating us ---
-        min_threat_dist = MAX_DIST
-        for coord, cell in board._state.items():
-            if cell.color != enemy_color:
-                continue
-            for friendly_coord, friendly_cell in board._state.items():
-                if friendly_cell.color != agent_color:
-                    continue
-                # Only a real threat if enemy is tall enough to eat us
-                if cell.height < friendly_cell.height:
-                    continue
-                min_orth, max_orth = self.orthogonal(coord, friendly_coord)
-                dist = min_orth + max(max_orth - cell.height, 0)
-                if dist < min_threat_dist:
-                    min_threat_dist = dist
+        # 5. Draw penalty — if we're ahead on tokens, penalise being near the
+        # turn limit (a draw would waste our advantage).
+        turns_left = max(0, 300 - board.play_phase_turn_count)
+        draw_risk = 1.0 - (turns_left / 300.0)  # 0 early, 1 at limit
+        # Only penalise when we're actually ahead; penalty scales with lead
+        lead = (agent_tokens - enemy_tokens) / total_tokens  # [-1, 1]
+        draw_penalty = draw_risk * max(0.0, lead) * 0.15
  
-        # --- Scores ---
-        token_score = agent_stack_height / (agent_stack_height + enemy_stack_height)
-        dist_score = 1.0 - (min_attack_dist / MAX_DIST)
-        threat_score = min_threat_dist / MAX_DIST
+        # --- Dynamic weighting by game phase ---
+        progress = min(board.play_phase_turn_count / 200.0, 1.0)
+        w_token  = 0.25 + 0.30 * progress   # 0.25 early → 0.55 late
+        w_tall   = 0.30 - 0.10 * progress   # 0.30 early → 0.20 late
+        w_eat    = 0.25
+        w_dist   = 1.0 - w_token - w_tall - w_eat  # remainder
  
-        # --- Dynamic weighting based on game phase ---
-        progress = min(board.play_phase_turn_count / 300, 1.0)
-        w_token = 0.4 + 0.4 * progress
-        w_dist = (1.0 - w_token) * 0.6
-        w_threat = (1.0 - w_token) * 0.4
+        score = (
+            w_token * token_score
+            + w_tall  * tall_score
+            + w_eat   * eat_threat_score
+            + w_dist  * attack_dist_score
+            - draw_penalty
+        )
+        return max(0.0, min(1.0, score))
  
-        return w_token * token_score + w_dist * dist_score + w_threat * threat_score
-
     def total_stack_height_count(self, board: Board, color: PlayerColor) -> int:
         return sum(
             cell.height for cell in board._state.values()
@@ -229,20 +303,79 @@ class MCTSTree:
     
 
     def placement_policy(self, state: GameState, agent_color: PlayerColor) -> PlaceAction:
-        legal_places = state.get_legal_actions()
-        legal_places = [a for a in legal_places if isinstance(a, PlaceAction)]
-        board = state._board
+        """
+        Heuristic placement for rollouts.  Fast — no board cloning, O(board) per call.
+ 
+        Scores each legal cell on four features:
+ 
+        1. Centre proximity    central stacks have 4 neighbours and more room to cascade/move; corner stacks are cascade-bait.
+ 
+        2. Enemy distance      further from existing enemy stacks is safer. Capped at 5 so very distant enemies don't dominate.
+ 
+        3. Friendly proximity  ideal gap is 2 to 3 cells from own stacks: close enough to merge later, far enough not to crowd. Peaks at distance 2, degrades on either side.
+ 
+        4. Edge penalty        cells on the outermost ring (row/col 0 or 7) lose tokens more easily to cascades; penalise them directly.
+        """
+        legal_places: list[PlaceAction] = [
+            a for a in state.get_legal_actions() if isinstance(a, PlaceAction)
+        ]
+        if not legal_places:
+            raise ValueError("No legal placement actions available")
+ 
+        bstate   = state._board._state
         opponent = agent_color.opponent
  
-        def placement_score(action: PlaceAction) -> float:
-            coord = action.coord
-            score = 0.0
-            score += abs(3.5 - coord.r) * 0.05  # prefer center rows
-            score += abs(3.5 - coord.c) * 0.05  # prefer center columns
-            return score + random.random() * 0.1  # small random tie-breaker
+        # Pre-collect friendly and enemy coords once (avoids re-scanning per cell)
+        enemy_coords:    list[Coord] = []
+        friendly_coords: list[Coord] = []
+        for coord, cell in bstate.items():
+            if cell.color == opponent:
+                enemy_coords.append(coord)
+            elif cell.color == agent_color:
+                friendly_coords.append(coord)
  
-        return min(legal_places, key=placement_score)
-    
+        CENTRE = 3.5
+ 
+        def score(action: PlaceAction) -> float:
+            c = action.coord
+ 
+            # 1. Centre proximity — normalised Manhattan distance from (3.5, 3.5).
+            #    Max possible distance is |0-3.5|+|0-3.5| = 7 in each axis → 14 total.
+            dist_centre = abs(c.r - CENTRE) + abs(c.c - CENTRE)
+            centre_score = 1.0 - (dist_centre / 14.0)   # [0, 1]
+ 
+            # 2. Enemy distance — further is safer; cap benefit at 5 cells.
+            if enemy_coords:
+                min_enemy = min(
+                    abs(c.r - e.r) + abs(c.c - e.c) for e in enemy_coords
+                )
+                enemy_score = min(min_enemy, 5) / 5.0   # [0, 1]
+            else:
+                enemy_score = 1.0  # no enemies yet → unconstrained
+ 
+            # 3. Friendly proximity — ideal gap of 2 cells for future merges.
+            #    Score peaks at distance 2, falls off toward 0 and 6+.
+            if friendly_coords:
+                min_friendly = min(
+                    abs(c.r - f.r) + abs(c.c - f.c) for f in friendly_coords
+                )
+                friendly_score = max(0.0, 1.0 - abs(min_friendly - 2) / 4.0)
+            else:
+                friendly_score = 0.5  # first placement, no reference point
+ 
+            # 4. Edge penalty — outermost ring is cascade-vulnerable.
+            on_edge = (c.r == 0 or c.r == 7 or c.c == 0 or c.c == 7)
+            edge_penalty = 0.25 if on_edge else 0.0
+ 
+            return (
+                0.40 * centre_score
+                + 0.25 * enemy_score
+                + 0.25 * friendly_score
+                - edge_penalty
+                + random.random() * 0.02   # tiny jitter to break exact ties
+            )
+ 
+        return max(legal_places, key=score)
 
     '''Helper function for calculating orthogonal distance between two coordinates. Returns a tuple of (min_orth, max_orth)'''
     def orthogonal(self, a: Coord, b: Coord) -> tuple[int, int]:
@@ -275,9 +408,9 @@ class MCTSTree:
         while node is not None:
             node.update(reward)
             node = node.parent
-            reward = 1.0 - reward 
 
     def best_action(self) -> Action | None:
         if not self.root.children:
             return None
         return max(self.root.children, key=lambda child: child.visits).action
+
