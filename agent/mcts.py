@@ -237,11 +237,11 @@ class MCTSTree:
         def placement_score(action: PlaceAction) -> float:
             coord = action.coord
             score = 0.0
-            score -= abs(3.5 - coord.r) * 0.05  # prefer center rows
-            score -= abs(3.5 - coord.c) * 0.05  # prefer center columns
+            score += abs(3.5 - coord.r) * 0.05  # prefer center rows
+            score += abs(3.5 - coord.c) * 0.05  # prefer center columns
             return score + random.random() * 0.1  # small random tie-breaker
  
-        return max(legal_places, key=placement_score)
+        return min(legal_places, key=placement_score)
     
 
     '''Helper function for calculating orthogonal distance between two coordinates. Returns a tuple of (min_orth, max_orth)'''
