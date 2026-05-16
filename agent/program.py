@@ -213,7 +213,9 @@ class Agent:
             node = tree.selection(tree.root)
 
             # ---- 2. Expansion ----
-            ordered_untried = [EatAction, CascadeAction, MoveAction,  PlaceAction]
+
+            #sorting
+            ordered_untried = [MoveAction, PlaceAction, CascadeAction, EatAction]
             node.untried_actions = [action for action in node.untried_actions if type(action) in ordered_untried]
 
             # If the node is not terminal and has untried actions, expand one.
