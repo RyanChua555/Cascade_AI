@@ -233,10 +233,10 @@ class Agent:
 
 
             # ---- 3. Simulation ----
-            reward = tree.simulate(node.state)
+            reward = tree.simulate(node.state, self._color)
 
             # ---- 4. Backpropagation ----
-            tree.backpropagate(node, reward)
+            tree.backpropagate(node, reward, self._color)
 
             iterations += 1
 

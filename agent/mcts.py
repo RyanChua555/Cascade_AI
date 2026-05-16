@@ -400,9 +400,8 @@ class MCTSTree:
     # Simulate
     # ------------------------------------------------------------------
 
-    def simulate(self, state: GameState) -> float:
+    def simulate(self, state: GameState, agent_color: PlayerColor) -> float:
         """Rollout from state for up to MAX_ROLLOUT_DEPTH plies, then evaluate."""
-        agent_color: PlayerColor = self.root.state.turn_color
         sim_state = state.clone()
 
         for _ in range(MAX_ROLLOUT_DEPTH):
@@ -423,9 +422,12 @@ class MCTSTree:
     def total_stack_height_count(self, board: Board, color: PlayerColor) -> int:
         return sum(cell.height for cell in board._state.values() if cell.color == color)
 
-    def backpropagate(self, node: MCTSNode | None, reward: float) -> None:
+    def backpropagate(self, node: MCTSNode | None, reward: float, agent_color: PlayerColor) -> None:
         while node is not None:
-            node.update(reward)
+            if node.state.turn_color == agent_color:
+                node.update(1.0 - reward)
+            else:
+                node.update(reward)
             node = node.parent
 
     def best_action(self) -> Action | None:
