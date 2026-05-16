@@ -79,9 +79,7 @@ class MCTSTree:
     def expand(self, node: MCTSNode, action: Action, next_state: GameState) -> MCTSNode:
         return node.add_child(action, next_state)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+
 
     def _cascade_value(
         self,
@@ -95,7 +93,6 @@ class MCTSTree:
           -1.0  tokens fall off the board AND no enemy is hit (self-elimination)
            0.0  no enemies hit and no tokens lost
           >0.0  proportional to enemy tokens hit
-        Never includes randomness — add jitter at the call site if needed.
         """
         r, c = action.coord.r, action.coord.c
         height = bstate[action.coord].height
@@ -114,21 +111,19 @@ class MCTSTree:
             return -1.0
         return float(enemy_hits)
 
-    # ------------------------------------------------------------------
-    # Rollout policy
-    # ------------------------------------------------------------------
+
 
     def rollout_policy(self, state: GameState, agent_color: PlayerColor) -> Action:
         """
         Fast action selection for rollout simulations. No board cloning.
 
         Priority order:
-          0. Placement phase  → placement_policy
-          1. EatAction        → always take the tallest-target eat
-          2. CascadeAction    → only if it hits an enemy AND doesn't
+          0. Placement phase  - placement_policy
+          1. EatAction        - always take the tallest-target eat
+          2. CascadeAction    - only if it hits an enemy AND doesn't
                                 self-eliminate (lose tokens off-board for free)
-          3. MoveAction       → merges first, then approach nearest enemy
-          4. Fallback         → random legal action
+          3. MoveAction       - merges first, then approach nearest enemy
+          4. Fallback         - random legal action
         """
         legal_actions = state.get_legal_actions()
         if not legal_actions:
@@ -157,9 +152,6 @@ class MCTSTree:
             return best_eat
 
         # ---- 2. Cascade: only enemy-hitting, non-self-eliminating ------
-        # Score is computed once per action and stored — never re-evaluated
-        # with different random values, which was the bug causing fatal
-        # self-cascades (turn 173 in the observed game).
         best_cascade: CascadeAction | None = None
         best_cascade_val = 0.0  # must strictly exceed 0 to be accepted
         for a in legal_actions:
@@ -175,7 +167,7 @@ class MCTSTree:
             return best_cascade
 
         # ---- 3. Move: merges first, then approach ----------------------
-        # Pre-compute nearest enemy to any friendly — one pass, no early break.
+        # Pre-compute nearest enemy to any friendly stack.
         nearest_enemy: Coord | None = None
         min_dist = float(MAX_DIST) + 1.0
         for coord, cell in bstate.items():
@@ -196,7 +188,6 @@ class MCTSTree:
             dest_cell = bstate[dest]
 
             if dest_cell.color == color:
-                # Merge: always beats approach — score above 1.0 ceiling of approach
                 merged_h = bstate[a.coord].height + dest_cell.height
                 val = 1.1 + merged_h * 0.05 + random.random() * 0.02
             elif nearest_enemy is not None:
@@ -216,17 +207,15 @@ class MCTSTree:
         # ---- 4. Fallback (only cascades with no-enemy path remain) ----
         return random.choice(legal_actions)
 
-    # ------------------------------------------------------------------
-    # Placement policy
-    # ------------------------------------------------------------------
+
 
     def placement_policy(self, state: GameState, agent_color: PlayerColor) -> PlaceAction:
         """
         Score placement cells on four features:
           1. Centre proximity  — closer to centre = better
-          2. Enemy distance    — further from enemies = safer (capped at 5)
+          2. Enemy distance    — further from enemies = safer
           3. Friendly distance — ideal gap ≈ 2 cells for future merges
-          4. Edge penalty      — row/col 0 or 7 are cascade-vulnerable
+          4. Edge penalty      — row/col 0 or 7 are vulnerable
         """
         legal_places: list[PlaceAction] = [
             a for a in state.get_legal_actions() if isinstance(a, PlaceAction)
@@ -277,21 +266,12 @@ class MCTSTree:
 
         return max(legal_places, key=score)
 
-    # ------------------------------------------------------------------
-    # Rollout score (static board evaluation)
-    # ------------------------------------------------------------------
+
 
     def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
         """
         Evaluate board from agent_color's perspective. Returns [0, 1].
-
-        Features:
-          1. token_score         raw material ratio
-          2. tall_score          fraction of tokens in h≥3 stacks
-          3. consolidation_score average stack height vs enemy
-          4. eat_threat_score    immediate captures minus vulnerabilities
-          5. attack_dist_score   proximity of our best stack to an enemy
-          draw_penalty           penalise approaching turn limit when ahead
+            0.0 = losing, 0.45 = draw, 1.0 = winning.
         """
         enemy_color = agent_color.opponent
         board = state._board
@@ -303,7 +283,7 @@ class MCTSTree:
                 return 1.0
             elif winner == enemy_color:
                 return 0.0
-            return 0.45  # draw slightly below neutral
+            return 0.45 
 
         agent_stacks: list[tuple[Coord, int]] = []
         enemy_stacks: list[tuple[Coord, int]] = []
@@ -380,9 +360,9 @@ class MCTSTree:
 
         # Dynamic weights
         progress = min(board.play_phase_turn_count / 200.0, 1.0)
-        w_token = 0.25 + 0.30 * progress   # 0.25 → 0.55
-        w_tall  = 0.20 - 0.05 * progress   # 0.20 → 0.15
-        w_cons  = 0.10 + 0.10 * progress   # 0.10 → 0.20
+        w_token = 0.25 + 0.30 * progress
+        w_tall  = 0.20 - 0.05 * progress
+        w_cons  = 0.10 + 0.10 * progress
         w_eat   = 0.20
         w_dist  = 1.0 - w_token - w_tall - w_cons - w_eat
 
@@ -396,9 +376,7 @@ class MCTSTree:
         )
         return max(0.0, min(1.0, score))
 
-    # ------------------------------------------------------------------
-    # Simulate
-    # ------------------------------------------------------------------
+
 
     def simulate(self, state: GameState, agent_color: PlayerColor) -> float:
         """Rollout from state for up to MAX_ROLLOUT_DEPTH plies, then evaluate."""
@@ -415,9 +393,7 @@ class MCTSTree:
 
         return self.rollout_score(sim_state, agent_color)
 
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
+
 
     def total_stack_height_count(self, board: Board, color: PlayerColor) -> int:
         return sum(cell.height for cell in board._state.values() if cell.color == color)

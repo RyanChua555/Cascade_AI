@@ -71,8 +71,6 @@ class GameState:
         opponent = current_player.opponent
 
         if self.phase == GamePhase.PLACEMENT:
-            # Placement phase: can place on empty cells not adjacent to
-            # opponent stacks.
             for r in range(BOARD_N):
                 for c in range(BOARD_N):
                     coord = Coord(r, c)
@@ -93,7 +91,6 @@ class GameState:
                         actions.append(PlaceAction(coord))
             return actions
 
-        # Play phase: generate MOVE, EAT, and CASCADE actions.
         for r in range(BOARD_N):
             for c in range(BOARD_N):
                 coord = Coord(r, c)
@@ -124,6 +121,7 @@ class GameState:
 
         return actions
 
+
 class Agent:
     """
     This class is the "entry point" for your agent, providing an interface to
@@ -136,23 +134,21 @@ class Agent:
 
         self._start_time = time.time()
         self._time_used = 0.0
+        self._tree = None
 
         print(f"MCTS agent initialised as {color}")
 
-
     def action(self, **referee: dict) -> Action:
         """
-        Called by the referee at the start of our turn.  Returns the chosen
+        Called by the referee at the start of our turn. Returns the chosen
         action.
         """
         time_remaining: float | None = referee.get("time_remaining", None)  # type: ignore
 
-        # --- Play phase: run MCTS ---
         budget = self.turn_budget(time_remaining)
         action = self.run_mcts(budget)
 
         if action is None:
-            # Fallback: pick a random legal action so we never return none
             legal = self._game_state.get_legal_actions()
             action = random.choice(legal) if legal else MoveAction(Coord(0, 0), Direction.Down)
             print(f"MCTS agent ({self._color}): fallback random action {action}")
@@ -164,17 +160,43 @@ class Agent:
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
         Called by the referee after every turn (ours and the opponent's).
-        Keep our internal game state in sync.
+        Advances the persistent tree root to match the action played, then
+        updates the internal game state.
         """
+    
+        self._advance_tree(action)
         self._game_state.apply_action(action)
+
+
+    def _advance_tree(self, action: Action) -> None:
+        """
+        Re-root the persistent tree at the child node corresponding to
+        `action`. If no matching child exists (it was never expanded),
+        discard the tree so run_mcts will rebuild it fresh next turn.
+        """
+        if self._tree is None:
+            return
+
+        matched_child = None
+        for child in self._tree.root.children:
+            if child.action == action:
+                matched_child = child
+                break
+
+        if matched_child is None:
+            # Action was never explored — can't reuse, discard.
+            self._tree = None
+            return
+
+        # Make the matched child the new root. Detach from parent to free unused memory.
+        matched_child.parent = None
+        self._tree.root = matched_child
+
 
 
     def turn_budget(self, time_remaining: float | None) -> float:
         """
-        Compute how many seconds to give to MCTS this turn.
-
-        Uses the time_remaining hint from the referee when available.
-        Falls back to a conservative estimate based on elapsed wall time.
+        Compute how many seconds to allocate to MCTS this turn.
         """
         if time_remaining is not None:
             available = max(time_remaining - TIME_BUFFER, 0.0)
@@ -189,20 +211,24 @@ class Agent:
     def run_mcts(self, time_budget: float) -> Action | None:
         """
         Run the four-phase MCTS loop for `time_budget` seconds and return
-        the best action found.
-
+        the best action found. Reuses the persistent tree when available.
         """
-        # Import here to avoid a circular import at module level.
         from .mcts import MCTSTree
 
-        root_state = self._game_state.clone()
-        tree = MCTSTree(root_state)
+        # --- Tree initialisation / reuse ---
+        if self._tree is None:
+            root_state = self._game_state.clone()
+            self._tree = MCTSTree(root_state)
+            self._tree.root.untried_actions = root_state.get_legal_actions()
+        else:
+            if self._tree.root.state.turn_count != self._game_state.turn_count:
+                root_state = self._game_state.clone()
+                self._tree = MCTSTree(root_state)
+                self._tree.root.untried_actions = root_state.get_legal_actions()
 
-        # Initialise the root's untried actions.
-        tree.root.untried_actions = root_state.get_legal_actions()
+        tree = self._tree
 
-        # If there is only one legal action, skip MCTS entirely.
-        if len(tree.root.untried_actions) == 1:
+        if len(tree.root.untried_actions) == 1 and not tree.root.children:
             return tree.root.untried_actions[0]
 
         deadline = time.time() + time_budget
@@ -213,24 +239,18 @@ class Agent:
             node = tree.selection(tree.root)
 
             # ---- 2. Expansion ----
-
-            #sorting
             ordered_untried = [MoveAction, PlaceAction, CascadeAction, EatAction]
-            node.untried_actions = [action for action in node.untried_actions if type(action) in ordered_untried]
+            node.untried_actions = [a for a in node.untried_actions if type(a) in ordered_untried]
 
-            # If the node is not terminal and has untried actions, expand one.
             if not node.state.game_over and node.untried_actions:
                 action = node.untried_actions.pop()
                 next_state = node.state.clone()
                 next_state.apply_action(action)
 
                 child = tree.expand(node, action, next_state)
-
-                # Initialise the child's untried actions for future expansion.
                 child.untried_actions = next_state.get_legal_actions()
 
                 node = child
-
 
             # ---- 3. Simulation ----
             reward = tree.simulate(node.state, self._color)
