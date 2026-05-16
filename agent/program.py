@@ -234,24 +234,28 @@ class Agent:
         deadline = time.time() + time_budget
         iterations = 0
 
+        def _expansion_priority(a: Action) -> int:
+            if isinstance(a, EatAction):     return 2
+            if isinstance(a, CascadeAction): return 1
+            return 0  # MoveAction / PlaceAction
+        
         while time.time() < deadline:
             # ---- 1. Selection ----
             node = tree.selection(tree.root)
 
             # ---- 2. Expansion ----
-            ordered_untried = [MoveAction, PlaceAction, CascadeAction, EatAction]
-            node.untried_actions = [a for a in node.untried_actions if type(a) in ordered_untried]
 
             if not node.state.game_over and node.untried_actions:
-                action = node.untried_actions.pop()
+                node.untried_actions.sort(key=_expansion_priority)
+                action = node.untried_actions.pop() 
                 next_state = node.state.clone()
                 next_state.apply_action(action)
-
+ 
                 child = tree.expand(node, action, next_state)
                 child.untried_actions = next_state.get_legal_actions()
-
+ 
                 node = child
-
+ 
             # ---- 3. Simulation ----
             reward = tree.simulate(node.state, self._color)
 
