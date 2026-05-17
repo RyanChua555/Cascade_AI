@@ -9,7 +9,7 @@ from referee.game.board import Board
 from referee.game.coord import CARDINAL_DIRECTIONS, Coord
 from referee.game.player import PlayerColor
 from referee.game import Direction
-
+from .program import evaluate
 from .program import GameState
 from referee.game import Action
 
@@ -118,39 +118,6 @@ class MCTSTree:
  
         return max(legal_places, key=placement_score)
     
- 
-    def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
-        enemy_color = agent_color.opponent
-        board  = state._board
-        bstate = board._state
- 
-        if state.game_over:
-            winner = board.winner_color
-            if winner == agent_color:
-                return 1.0
-            elif winner == enemy_color:
-                return 0.0
-            return 0.45  # draw slightly better than loss to encourage fighting for draws
- 
-        agent_stacks: list[tuple[Coord, int]] = []
-        enemy_stacks: list[tuple[Coord, int]] = []
-        for coord, cell in bstate.items():
-            if cell.color == agent_color:
-                agent_stacks.append((coord, cell.height))
-            elif cell.color == enemy_color:
-                enemy_stacks.append((coord, cell.height))
- 
-        agent_tokens = sum(h for _, h in agent_stacks)
-        enemy_tokens = sum(h for _, h in enemy_stacks)
-
-        total_tokens = agent_tokens + enemy_tokens
-
-        if total_tokens == 0:
-            return 0.5
- 
-        score = agent_tokens / total_tokens
-
-        return max(0.0, min(1.0, score))
 
 
 
@@ -167,7 +134,7 @@ class MCTSTree:
                 break
             sim_state.apply_action(action)
 
-        return self.rollout_score(sim_state, agent_color)
+        return evaluate(sim_state._board, agent_color)
 
 
 
@@ -178,9 +145,9 @@ class MCTSTree:
     def backpropagate(self, node: MCTSNode | None, reward: float, agent_color: PlayerColor) -> None:
         while node is not None:
             if node.state.turn_color == agent_color:
-                node.update(1.0 - reward)
+                node.update(1.0 - reward)       
             else:
-                node.update(reward)
+                node.update(reward)  
             node = node.parent
 
 

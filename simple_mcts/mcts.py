@@ -120,28 +120,18 @@ class MCTSTree:
     
  
     def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
-        """
-        Static board evaluation from agent_color's perspective. Returns [0, 1].
-        Used both as alpha-beta leaf evaluation and MCTS rollout terminal score.
-
-        Features:
-          1. token_score         — raw material ratio
-          2. tall_score          — fraction of tokens in h≥3 stacks (combat-ready)
-          3. consolidation_score — average stack height vs enemy (fewer taller = better)
-          4. eat_threat_score    — immediate captures minus immediate vulnerabilities
-          5. attack_dist_score   — proximity of our best attacker to any enemy
-          draw_penalty           — penalise nearing turn limit when materially ahead
-        """
         enemy_color = agent_color.opponent
         board  = state._board
         bstate = board._state
-
+ 
         if state.game_over:
             winner = board.winner_color
-            if winner == agent_color:   return 1.0
-            elif winner == enemy_color: return 0.0
-            return 0.45  # draw
-
+            if winner == agent_color:
+                return 1.0
+            elif winner == enemy_color:
+                return 0.0
+            return 0.45  # draw slightly better than loss to encourage fighting for draws
+ 
         agent_stacks: list[tuple[Coord, int]] = []
         enemy_stacks: list[tuple[Coord, int]] = []
         for coord, cell in bstate.items():
@@ -149,88 +139,17 @@ class MCTSTree:
                 agent_stacks.append((coord, cell.height))
             elif cell.color == enemy_color:
                 enemy_stacks.append((coord, cell.height))
-
+ 
         agent_tokens = sum(h for _, h in agent_stacks)
         enemy_tokens = sum(h for _, h in enemy_stacks)
+
         total_tokens = agent_tokens + enemy_tokens
+
         if total_tokens == 0:
             return 0.5
+ 
+        score = agent_tokens / total_tokens
 
-        # 1. Token ratio
-        token_score = agent_tokens / total_tokens
-
-        # 2. Tall-stack concentration (h≥3 can eat most things and cascade far)
-        agent_tall = sum(h for _, h in agent_stacks if h >= 3)
-        enemy_tall = sum(h for _, h in enemy_stacks if h >= 3)
-        tall_total = agent_tall + enemy_tall
-        tall_score = (agent_tall / tall_total) if tall_total > 0 else 0.5
-
-        # 3. Consolidation: higher average stack height = more concentrated power
-        agent_avg_h = agent_tokens / len(agent_stacks) if agent_stacks else 0.0
-        enemy_avg_h = enemy_tokens / len(enemy_stacks) if enemy_stacks else 0.0
-        max_avg = max(agent_avg_h, enemy_avg_h, 1.0)
-        consolidation_score = (agent_avg_h - enemy_avg_h) / (2.0 * max_avg) + 0.5
-
-        # 4. Immediate eat threats vs vulnerabilities
-        eat_threats    = 0
-        vulnerabilities = 0
-        for (ac, ah) in agent_stacks:
-            for d in CARDINAL_DIRECTIONS:
-                nr, nc = ac.r + d.r, ac.c + d.c
-                if 0 <= nr < BOARD_N and 0 <= nc < BOARD_N:
-                    nbr = bstate[Coord(nr, nc)]
-                    if nbr.color == enemy_color and ah >= nbr.height:
-                        eat_threats += nbr.height
-        for (ec, eh) in enemy_stacks:
-            for d in CARDINAL_DIRECTIONS:
-                nr, nc = ec.r + d.r, ec.c + d.c
-                if 0 <= nr < BOARD_N and 0 <= nc < BOARD_N:
-                    nbr = bstate[Coord(nr, nc)]
-                    if nbr.color == agent_color and eh >= nbr.height:
-                        vulnerabilities += nbr.height
-        max_threat = max(agent_tokens, enemy_tokens, 1)
-        eat_threat_score = 0.5 + (eat_threats - vulnerabilities) / (2.0 * max_threat)
-        eat_threat_score = max(0.0, min(1.0, eat_threat_score))
-
-        # 5. Attack distance: closest h≥2 agent stack to any enemy
-        min_attack_dist = float(MAX_DIST)
-        for (ac, ah) in agent_stacks:
-            if ah < 2:
-                continue
-            for (ec, _) in enemy_stacks:
-                d = abs(ac.r - ec.r) + abs(ac.c - ec.c)
-                if d < min_attack_dist:
-                    min_attack_dist = d
-        if min_attack_dist == float(MAX_DIST):
-            for (ac, _) in agent_stacks:
-                for (ec, _) in enemy_stacks:
-                    d = abs(ac.r - ec.r) + abs(ac.c - ec.c)
-                    if d < min_attack_dist:
-                        min_attack_dist = d
-        attack_dist_score = 1.0 - (min_attack_dist / MAX_DIST)
-
-        # Draw penalty
-        turns_left   = max(0, 300 - board.play_phase_turn_count)
-        draw_risk    = 1.0 - (turns_left / 300.0)
-        lead         = (agent_tokens - enemy_tokens) / total_tokens
-        draw_penalty = draw_risk * max(0.0, lead) * 0.15
-
-        # Dynamic weights
-        progress = min(board.play_phase_turn_count / 200.0, 1.0)
-        w_token = 0.25 + 0.30 * progress
-        w_tall  = 0.20 - 0.05 * progress
-        w_cons  = 0.10 + 0.10 * progress
-        w_eat   = 0.20
-        w_dist  = 1.0 - w_token - w_tall - w_cons - w_eat
-
-        score = (
-            w_token * token_score
-            + w_tall  * tall_score
-            + w_cons  * consolidation_score
-            + w_eat   * eat_threat_score
-            + w_dist  * attack_dist_score
-            - draw_penalty
-        )
         return max(0.0, min(1.0, score))
 
 
@@ -259,9 +178,9 @@ class MCTSTree:
     def backpropagate(self, node: MCTSNode | None, reward: float, agent_color: PlayerColor) -> None:
         while node is not None:
             if node.state.turn_color == agent_color:
-                node.update(1.0 - reward)       
+                node.update(1.0 - reward)
             else:
-                node.update(reward)  
+                node.update(reward)
             node = node.parent
 
 
