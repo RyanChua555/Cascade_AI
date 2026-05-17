@@ -134,11 +134,11 @@ class MCTSTree:
         color  = board.turn_color
         opponent = color.opponent
  
-        # ---- 0. Placement phase ----------------------------------------
+        # Placement phase
         if state.phase == GamePhase.PLACEMENT:
             return self.placement_policy(state, color)
  
-        # ---- 1. Eat: take the highest-value eat ------------------------
+        # Eat
         best_eat: EatAction | None = None
         best_eat_val = -1
         for a in legal_actions:
@@ -151,7 +151,7 @@ class MCTSTree:
         if best_eat is not None:
             return best_eat
  
-        # ---- 2. Cascade: only enemy-hitting, non-self-eliminating ------
+        # Cascade
         best_cascade: CascadeAction | None = None
         best_cascade_val = 0.0
         for a in legal_actions:
@@ -165,13 +165,7 @@ class MCTSTree:
         if best_cascade is not None:
             return best_cascade
  
-        # ---- 3. Move: merges first, then per-stack approach ------------
-        # For approach: score each move by how much it closes the distance
-        # from *that specific stack* to its nearest enemy. This avoids the
-        # bug where a global "nearest enemy" is irrelevant to the stack
-        # actually being moved.
-        #
-        # Pre-build a list of enemy coords once.
+        # Move
         enemy_coords: list[Coord] = [
             coord for coord, cell in bstate.items()
             if cell.color == opponent
@@ -211,12 +205,10 @@ class MCTSTree:
         if best_move is not None:
             return best_move
  
-        # ---- 4. Fallback -----------------------------------------------
+        # Fallback
         return random.choice(legal_actions)
  
-    # ------------------------------------------------------------------
-    # Placement policy
-    # ------------------------------------------------------------------
+
  
     def placement_policy(self, state: GameState, agent_color: PlayerColor) -> PlaceAction:
         """
@@ -275,9 +267,7 @@ class MCTSTree:
  
         return max(legal_places, key=score)
  
-    # ------------------------------------------------------------------
-    # Rollout score (static board evaluation)
-    # ------------------------------------------------------------------
+
  
     def rollout_score(self, state: GameState, agent_color: PlayerColor) -> float:
         """
@@ -321,7 +311,7 @@ class MCTSTree:
         # 1. Token ratio
         token_score = agent_tokens / total_tokens
  
-        # 2. Tall-stack concentration (h≥3 = can eat most things)
+        # 2. Tall-stack concentration (h>=3 = can eat most things)
         agent_tall = sum(h for _, h in agent_stacks if h >= 3)
         enemy_tall = sum(h for _, h in enemy_stacks if h >= 3)
         tall_total = agent_tall + enemy_tall
@@ -354,7 +344,7 @@ class MCTSTree:
         eat_threat_score = 0.5 + (eat_threats - vulnerabilities) / (2.0 * max_threat)
         eat_threat_score = max(0.0, min(1.0, eat_threat_score))
  
-        # 5. Attack distance: best (h≥2) agent stack to any enemy
+        # 5. Attack distance: best (h>=2) agent stack to any enemy
         min_attack_dist = float(MAX_DIST)
         for (ac, ah) in agent_stacks:
             if ah < 2:
@@ -364,7 +354,7 @@ class MCTSTree:
                 if d < min_attack_dist:
                     min_attack_dist = d
         if min_attack_dist == float(MAX_DIST):
-            # No h≥2 stacks — use any stack
+            # No h>=2 stacks — use any stack
             for (ac, _) in agent_stacks:
                 for (ec, _) in enemy_stacks:
                     d = abs(ac.r - ec.r) + abs(ac.c - ec.c)

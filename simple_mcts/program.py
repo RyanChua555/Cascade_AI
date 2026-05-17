@@ -215,7 +215,7 @@ class Agent:
         """
         from .mcts import MCTSTree
 
-        # --- Tree initialisation / reuse ---
+        # Tree initialisation / reuse 
         if self._tree is None:
             root_state = self._game_state.clone()
             self._tree = MCTSTree(root_state)
@@ -240,10 +240,10 @@ class Agent:
             return 0  # MoveAction / PlaceAction
         
         while time.time() < deadline:
-            # ---- 1. Selection ----
+            # Selection
             node = tree.selection(tree.root)
 
-            # ---- 2. Expansion ----
+            # Expansion
 
             if not node.state.game_over and node.untried_actions:
                 node.untried_actions.sort(key=_expansion_priority)
@@ -256,10 +256,10 @@ class Agent:
  
                 node = child
  
-            # ---- 3. Simulation ----
+            # Simulation
             reward = tree.simulate(node.state, self._color)
 
-            # ---- 4. Backpropagation ----
+            # Backpropagation
             tree.backpropagate(node, reward, self._color)
 
             iterations += 1

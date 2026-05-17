@@ -11,18 +11,14 @@ from referee.game import (
     Board, GamePhase, BOARD_N, CARDINAL_DIRECTIONS,
 )
 
-# ---------------------------------------------------------------------------
-# Time budget constants
-# ---------------------------------------------------------------------------
+
 TOTAL_TIME_BUDGET = 180.0
 TIME_BUFFER       = 6.0
 TIME_FRACTION     = 0.10      # fraction of remaining time per turn
 MAX_TIME_PER_TURN = 6.0
 MIN_TIME_PER_TURN = 0.05
 
-# ---------------------------------------------------------------------------
-# Search constants
-# ---------------------------------------------------------------------------
+
 INF = float("inf")
 AB_DEPTH_INITIAL = 3          # starting iterative-deepening depth
 AB_DEPTH_MAX     = 6          # never search deeper than this
@@ -30,9 +26,6 @@ AB_DEPTH_MAX     = 6          # never search deeper than this
 BOARD_CENTRE = 3.5
 
 
-# ===========================================================================
-# GameState wrapper
-# ===========================================================================
 
 class GameState:
     """Thin wrapper around Board that adds legal-action generation."""
@@ -43,8 +36,6 @@ class GameState:
         board: Board | None = None,
     ):
         self._board = board if board is not None else Board(initial_player=initial_player)
-
-    # --- basic properties --------------------------------------------------
 
     @property
     def phase(self) -> GamePhase:
@@ -75,7 +66,6 @@ class GameState:
     def render(self, use_color: bool = False, use_unicode: bool = False) -> str:
         return self._board.render(use_color=use_color, use_unicode=use_unicode)
 
-    # --- legal action generation -------------------------------------------
 
     def get_legal_actions(self) -> list[Action]:
         actions: list[Action] = []
@@ -123,22 +113,18 @@ class GameState:
         return actions
 
 
-# ===========================================================================
-# Evaluation function
-# ===========================================================================
-
 def evaluate(board: Board, agent_color: PlayerColor) -> float:
     """
     Static board evaluation from agent_color's perspective.
     Returns a value roughly in [-1, 1].
 
     Features (all normalised):
-      1. Token ratio                  – raw material balance
-      2. Eat-threat count             – immediate capture opportunities
-      3. Vulnerability count          – stacks we're about to lose
-      4. Stack-height concentration   – tall stacks are powerful
-      5. Mobility ratio               – number of legal actions available
-      6. Centre control               – stacks near board centre
+      1. Token ratio                  - raw material balance
+      2. Eat-threat count             - immediate capture opportunities
+      3. Vulnerability count          - stacks we're about to lose
+      4. Stack-height concentration   - tall stacks are more powerful
+      5. Mobility ratio               - number of legal actions available
+      6. Centre control               - stacks near board centre
     """
     enemy_color = agent_color.opponent
     state = board._state
@@ -205,7 +191,6 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
 
     # Dynamic weighting based on game progress
     progress = min(board.play_phase_turn_count / 150.0, 1.0)
-    # Early game: position matters more; late game: material dominates
     w_token   = 0.35 + 0.35 * progress
     w_threat  = 0.30
     w_height  = 0.15
@@ -220,9 +205,6 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
     return max(-1.0, min(1.0, score))
 
 
-# ===========================================================================
-# Move ordering
-# ===========================================================================
 
 def order_actions(actions: list[Action], board: Board, color: PlayerColor) -> list[Action]:
     """
@@ -270,9 +252,6 @@ def order_actions(actions: list[Action], board: Board, color: PlayerColor) -> li
     return sorted(actions, key=score, reverse=True)
 
 
-# ===========================================================================
-# Alpha-beta minimax with iterative deepening
-# ===========================================================================
 
 class AlphaBeta:
 
@@ -379,7 +358,7 @@ class AlphaBeta:
                 value = max(value, self._minimax(child, depth - 1, alpha, beta, False))
                 alpha = max(alpha, value)
                 if value >= beta:
-                    break  # β cut-off
+                    break  # beta cut-off
             return value
         else:
             value = INF
@@ -391,13 +370,10 @@ class AlphaBeta:
                 value = min(value, self._minimax(child, depth - 1, alpha, beta, True))
                 beta = min(beta, value)
                 if value <= alpha:
-                    break  # α cut-off
+                    break  # alpha cut-off
             return value
 
 
-# ===========================================================================
-# Placement phase heuristic
-# ===========================================================================
 
 def placement_score(coord: Coord, board: Board, color: PlayerColor) -> float:
     """
@@ -460,9 +436,6 @@ def choose_placement(state: GameState, color: PlayerColor) -> Action:
     return max(legal, key=lambda a: placement_score(a.coord, state._board, color))
 
 
-# ===========================================================================
-# Agent entry point
-# ===========================================================================
 
 class Agent:
     """
@@ -483,13 +456,13 @@ class Agent:
         """
         time_remaining: float | None = referee.get("time_remaining", None)  # type: ignore
 
-        # --- Placement phase: fast heuristic ---
+        # Placement phase
         if self._state.phase == GamePhase.PLACEMENT:
             chosen = choose_placement(self._state, self._color)
             print(f"Agent ({self._color}): PLACE {chosen.coord}")
             return chosen
 
-        # --- Play phase: iterative-deepening alpha-beta ---
+        # Play phase
         budget   = self._turn_budget(time_remaining)
         deadline = time.time() + budget
 

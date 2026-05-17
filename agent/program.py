@@ -129,11 +129,6 @@ class GameState:
 
 
 
-
-# ---------------------------------------------------------------------------
-# Move ordering for alpha-beta (critical for pruning efficiency)
-# ---------------------------------------------------------------------------
-
 def order_actions(actions: list[Action], board: Board, color: PlayerColor) -> list[Action]:
     """
     Order actions so alpha-beta sees the best moves first, maximising cutoffs.
@@ -179,9 +174,6 @@ def order_actions(actions: list[Action], board: Board, color: PlayerColor) -> li
     return sorted(actions, key=score, reverse=True)
 
 
-# ---------------------------------------------------------------------------
-# Iterative-deepening alpha-beta minimax
-# ---------------------------------------------------------------------------
 
 class AlphaBeta:
 
@@ -288,7 +280,7 @@ class AlphaBeta:
                 value = max(value, self._minimax(child, depth - 1, alpha, beta, False))
                 alpha = max(alpha, value)
                 if value >= beta:
-                    break  # β cut-off
+                    break  # beta cut-off
             return value
         else:
             value = INF
@@ -300,7 +292,7 @@ class AlphaBeta:
                 value = min(value, self._minimax(child, depth - 1, alpha, beta, True))
                 beta = min(beta, value)
                 if value <= alpha:
-                    break  # α cut-off
+                    break  # alpha cut-off
             return value
 
 def evaluate(board: Board, agent_color: PlayerColor) -> float:
@@ -309,12 +301,12 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
     Returns a value roughly in [-1, 1].
 
     Features (all normalised):
-      1. Token ratio                  – raw material balance
-      2. Eat-threat count             – immediate capture opportunities
-      3. Vulnerability count          – stacks we're about to lose
-      4. Stack-height concentration   – tall stacks are powerful
-      5. Mobility ratio               – number of legal actions available
-      6. Centre control               – stacks near board centre
+      1. Token ratio                  - raw material balance
+      2. Eat-threat count             - immediate capture opportunities
+      3. Vulnerability count          - stacks we're about to lose
+      4. Stack-height concentration   - tall stacks are more powerful
+      5. Mobility ratio               - number of legal actions available
+      6. Centre control               - stacks near board centre
     """
     enemy_color = agent_color.opponent
     state = board._state
@@ -377,7 +369,7 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
         1.0 - (abs(c.r - BOARD_CENTRE) + abs(c.c - BOARD_CENTRE)) / 7.0
         for c, _ in enemy_stacks
     ) / max(len(enemy_stacks), 1)
-    centre_score = agent_centre - enemy_centre  # in [-1, 1]
+    centre_score = agent_centre - enemy_centre
 
     # 6. Distance between closest stacks (encourages engagement late game)
     distance_to_enemy = min(
@@ -389,7 +381,6 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
 
     # Dynamic weighting based on game progress
     progress = min(board.play_phase_turn_count / 150.0, 1.0)
-    # Early game: position matters more; late game: material dominates
     w_token   = 0.35 + 0.35 * progress
     w_threat  = 0.30 - 0.10 * progress
     w_height  = 0.15 - 0.10 * progress
@@ -430,9 +421,6 @@ class Agent:
         budget = self.turn_budget(time_remaining)
         deadline = time.time() + budget
 
-        # ------------------------------------------------------------------
-        # Placement phase
-        # ------------------------------------------------------------------
         if self._game_state.phase == GamePhase.PLACEMENT:
             chosen = self._placement_action()
             print(f"Agent ({self._color}): PLACE {chosen.coord}")
@@ -446,38 +434,16 @@ class Agent:
         if len(legal_actions) == 1:
             return legal_actions[0]
 
-        # ------------------------------------------------------------------
-        # Hybrid search policy
-        # ------------------------------------------------------------------
-        #
-        # Early / mid game:
-        #   Use alpha-beta because tactical accuracy matters most.
-        #
-        # Late game:
-        #   Use MCTS because branching factor shrinks and long-term
-        #   rollout evaluation becomes stronger.
-        #
-        # Timeout safety:
-        #   If alpha-beta times out too early or fails to return a move,
-        #   immediately fall back to MCTS.
-        #
-        # ------------------------------------------------------------------
 
         play_turns = self._game_state.play_phase_turn_count
-
-        # Rough branching estimate
 
         # Endgame heuristic
         endgame = (
             play_turns > 130
         )
 
-        # ------------------------------------------------------------------
-        # PRIMARY: Alpha-beta
-        # ------------------------------------------------------------------
-
+        # Early game: Alpha-Beta search
         if not endgame:    
-            # --- Play phase: iterative-deepening alpha-beta ---
             budget   = self._turn_budget(time_remaining)
             deadline = time.time() + budget
 
@@ -494,11 +460,7 @@ class Agent:
 
             return action
 
-
-        # ------------------------------------------------------------------
-        # FALLBACK / ENDGAME: MCTS
-        # ------------------------------------------------------------------
-
+        # Late game: MCTS fallback
         remaining_budget = max(0.05, deadline - time.time())
 
         mcts_action = self.run_mcts(remaining_budget)
@@ -510,10 +472,7 @@ class Agent:
             )
             return mcts_action
 
-        # ------------------------------------------------------------------
-        # Final emergency fallback
-        # ------------------------------------------------------------------
-
+        # Fallback to random action if MCTS fails
         fallback = random.choice(legal_actions)
 
         print(
