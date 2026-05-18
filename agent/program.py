@@ -4,9 +4,17 @@
 import copy
 import time
 import random
-
+import agent.constants as constants # type: ignore
+from referee.game import GamePhase
+from referee.game.actions import CascadeAction, EatAction, MoveAction, PlaceAction
+from referee.game.board import Board
+from referee.game.coord import CARDINAL_DIRECTIONS, Coord
+from referee.game.player import PlayerColor
+from referee.game import Direction
+from referee.game import Action
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction, Board, GamePhase, BOARD_N, CARDINAL_DIRECTIONS
+
 
 
 # Total CPU seconds available per game (referee hard limit is 180s).
@@ -14,18 +22,6 @@ TOTAL_TIME_BUDGET = 180.0
 
 # Reserve this many seconds as a safety buffer so we never hit the hard limit.
 TIME_BUFFER = 5.0
-
-# Fraction of remaining time to spend on each individual alpha-beta call.
-TIME_FRACTION_PER_TURN = 0.05
-
-# Hard cap per turn.
-MAX_TIME_PER_TURN = 5.0
-
-# Minimum time per turn.
-MIN_TIME_PER_TURN = 0.1
-
-# Alpha-beta iterative deepening limits.
-AB_MAX_DEPTH = 6
 
 INF = float("inf")
 
@@ -146,7 +142,7 @@ def order_actions(actions: list[Action], board: Board, color: PlayerColor) -> li
         if isinstance(action, EatAction):
             dest = Coord(action.coord.r + action.direction.r,
                          action.coord.c + action.direction.c)
-            return 1000.0 + bstate[dest].height
+            return constants.   EAT_PRIORITY_BASE + bstate[dest].height
 
         if isinstance(action, CascadeAction):
             r, c   = action.coord.r, action.coord.c
@@ -159,14 +155,14 @@ def order_actions(actions: list[Action], board: Board, color: PlayerColor) -> li
                     cell = bstate[Coord(nr, nc)]
                     if cell.color == opponent:
                         hits += cell.height
-            return 500.0 + hits
+            return constants.CASCADE_PRIORITY_BASE + hits
 
         if isinstance(action, MoveAction):
             dest = Coord(action.coord.r + action.direction.r,
                          action.coord.c + action.direction.c)
             dest_cell = bstate[dest]
             if dest_cell.color == color:
-                return 200.0 + dest_cell.height  # merge
+                return  constants.MOVE_MERGE_PRIORITY_BASE + dest_cell.height  # merge
             return 0.0
 
         return 0.0
@@ -203,7 +199,7 @@ class AlphaBeta:
 
         best_action = random.choice(legal)  # safe fallback
 
-        for depth in range(1, AB_MAX_DEPTH + 1):
+        for depth in range(1, int(constants.AB_MAX_DEPTH) + 1):
             if self.timed_out():
                 break
             self._timed_out = False  # reset per iteration
@@ -305,8 +301,8 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
       2. Eat-threat count             - immediate capture opportunities
       3. Vulnerability count          - stacks we're about to lose
       4. Stack-height concentration   - tall stacks are more powerful
-      5. Mobility ratio               - number of legal actions available
-      6. Centre control               - stacks near board centre
+      5. Centre control               - stacks near board centre
+      6. Distance to enemy stacks     - encourages engagement late game when tokens are scarce
     """
     enemy_color = agent_color.opponent
     state = board._state
@@ -380,12 +376,62 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
     distance_score = (14 - distance_to_enemy) / 13.0  # closer is better
 
     # Dynamic weighting based on game progress
-    progress = min(board.play_phase_turn_count / 150.0, 1.0)
-    w_token   = 0.35 + 0.35 * progress
-    w_threat  = 0.30 - 0.10 * progress
-    w_height  = 0.15 - 0.10 * progress
-    w_distance = 0.00 + 0.20 * progress
-    w_centre  = (1.0 - w_token - w_threat - w_height - w_distance)
+    progress = min(
+        board.play_phase_turn_count / constants.PROGRESS_DIVISOR,
+        1.0
+    )
+
+    if board.play_phase_turn_count <= constants.EARLY_GAME_END:
+        w_token = (
+                constants.EARLY_TOKEN_BASE
+            + constants.EARLY_TOKEN_PROGRESS * progress
+        )
+
+        w_threat = (
+            constants.EARLY_THREAT_BASE
+            + constants.EARLY_THREAT_PROGRESS * progress
+        )
+
+        w_distance = (
+            constants.EARLY_DISTANCE_BASE
+            + constants.EARLY_DISTANCE_PROGRESS * progress
+        )
+
+        w_height = (
+            constants.EARLY_HEIGHT_BASE
+            + constants.EARLY_HEIGHT_PROGRESS * progress
+        )
+
+        w_centre = (
+            constants.EARLY_CENTRE_BASE
+            + constants.EARLY_CENTRE_PROGRESS * progress
+        )
+
+    else:
+        w_token = (
+            constants.LATE_TOKEN_BASE
+            + constants.LATE_TOKEN_PROGRESS * progress
+        )
+
+        w_threat = (
+            constants.LATE_THREAT_BASE
+            + constants.LATE_THREAT_PROGRESS * progress
+        )
+
+        w_distance = (
+            constants.LATE_DISTANCE_BASE
+            + constants.LATE_DISTANCE_PROGRESS * progress
+        )
+
+        w_height = (
+            constants.LATE_HEIGHT_BASE
+            + constants.LATE_HEIGHT_PROGRESS * progress
+        )
+
+        w_centre = (
+            constants.LATE_CENTRE_BASE
+            + constants.LATE_CENTRE_PROGRESS * progress
+        )
 
     score = (
         w_token  * token_score
@@ -394,7 +440,10 @@ def evaluate(board: Board, agent_color: PlayerColor) -> float:
         + w_centre * centre_score
         + w_distance * distance_score
     )
-    return max(-1.0, min(1.0, score))
+    
+    if board.play_phase_turn_count <= constants.EARLY_GAME_END:
+        return max(-1.0, min(1.0, score))
+    return (max(-1.0, min(1.0, score))+1)/2 # rescale to [0, 1] in late game for MCTS rollout evaluation
 
 
 class Agent:
@@ -506,7 +555,12 @@ class Agent:
             else:
                 friendly_score = 0.5
             edge_penalty = 0.25 if (c.r in (0,7) or c.c in (0,7)) else 0.0
-            return (0.40*centre_score + 0.50*friendly_score - edge_penalty + random.random()*0.02)
+            return (
+                constants.PLACEMENT_CENTRE_WEIGHT * centre_score
+                + constants.PLACEMENT_FRIENDLY_WEIGHT * friendly_score
+                - edge_penalty
+                + random.random() * constants.PLACEMENT_RANDOMNESS
+            )       
         
         return max(legal_places, key=score)
 
@@ -534,8 +588,8 @@ class Agent:
         else:
             elapsed   = time.time() - self._start_time
             available = max(TOTAL_TIME_BUDGET - elapsed - TIME_BUFFER, 0.0)
-        budget = available * TIME_FRACTION_PER_TURN
-        return max(MIN_TIME_PER_TURN, min(MAX_TIME_PER_TURN, budget))
+        budget = available * constants.TIME_FRACTION_PER_TURN
+        return max(constants.MIN_TIME_PER_TURN, min(constants.MAX_TIME_PER_TURN, budget))
 
     def run_mcts(self, time_budget: float) -> Action | None:
         """
@@ -594,5 +648,5 @@ class Agent:
             elapsed   = time.time() - self._start_time
             available = max(TOTAL_TIME_BUDGET - elapsed - TIME_BUFFER, 0.0)
 
-        budget = available * TIME_FRACTION_PER_TURN
-        return max(MIN_TIME_PER_TURN, min(MAX_TIME_PER_TURN, budget))
+        budget = available * constants.TIME_FRACTION_PER_TURN
+        return max(constants.MIN_TIME_PER_TURN, min(constants.MAX_TIME_PER_TURN, budget))

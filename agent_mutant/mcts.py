@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import random
-import tuner.constants as constants # type: ignore
+import agent.constants as constants # type: ignore
 from dataclasses import dataclass, field
 from referee.game import GamePhase
 from referee.game.actions import CascadeAction, EatAction, MoveAction, PlaceAction

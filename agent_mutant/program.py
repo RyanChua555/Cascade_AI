@@ -4,7 +4,7 @@
 import copy
 import time
 import random
-import tuner.constants as constants # type: ignore
+import agent.constants as constants # type: ignore
 from referee.game import GamePhase
 from referee.game.actions import CascadeAction, EatAction, MoveAction, PlaceAction
 from referee.game.board import Board

@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-BASE_AGENT_DIR = "tuner"
+BASE_AGENT_DIR = "agent"
 
 GENERATIONS = 100000
 GAMES_PER_SIDE = 2

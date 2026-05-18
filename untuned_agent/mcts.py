@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-
 import math
 import random
-import tuner.constants as constants # type: ignore
 from dataclasses import dataclass, field
 from referee.game import GamePhase
 from referee.game.actions import CascadeAction, EatAction, MoveAction, PlaceAction
@@ -15,9 +13,8 @@ from .program import evaluate
 from .program import GameState
 from referee.game import Action
 
-
 MAX_DIST = 14          # max Manhattan distance on 8×8 board
-
+MAX_ROLLOUT_DEPTH = 20 # simulation depth limit
 BOARD_N = 8
 
 
@@ -49,7 +46,7 @@ class MCTSNode:
         self.visits += 1
         self.value += reward
 
-    def uct_score(self, exploration_constant: float = constants.MCTS_EXPLORATION_CONSTANT) -> float:
+    def uct_score(self, exploration_constant: float = math.sqrt(2.0)) -> float:
         if self.visits == 0:
             return float("inf")
         parent_visits = self.parent.visits if self.parent else self.visits
@@ -57,7 +54,7 @@ class MCTSNode:
         exploration = exploration_constant * math.sqrt(math.log(parent_visits) / self.visits)
         return exploitation + exploration
 
-    def best_child(self, exploration_constant: float = constants.MCTS_EXPLORATION_CONSTANT) -> MCTSNode | None:
+    def best_child(self, exploration_constant: float = math.sqrt(2.0)) -> MCTSNode | None:
         if not self.children:
             return None
         return max(self.children, key=lambda child: child.uct_score(exploration_constant))
@@ -128,7 +125,7 @@ class MCTSTree:
         """Rollout from state for up to MAX_ROLLOUT_DEPTH plies, then evaluate."""
         sim_state = state.clone()
 
-        for _ in range(int(constants.MAX_ROLLOUT_DEPTH)):
+        for _ in range(MAX_ROLLOUT_DEPTH):
             if sim_state.game_over:
                 break
             try:
