@@ -1,0 +1,3 @@
+A hybrid AI agent switching from iterative-deepening alpha-beta pruning (early/mid-game) to Monte CarloTree Search (late-game), implementing a 5-feature evaluation function with phase-dependent weights and move-ordering heuristic, with  automated hill-climbing script running as many self-play generations as you want to tune agent parameters.
+
+Read report.pdf for a detailed description on what the agent does.
